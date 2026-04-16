@@ -128,7 +128,7 @@ deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
   --collect_grad False \
   --use_data_flag full \
   --progressive False \
-  --ratio 0.2 \
+  --ratio 1.0 \
   --use_tokensr True \
   --pattern 32_patch \
   --model_version v_2
@@ -140,15 +140,19 @@ deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
 Key parameters in configuration:
 
 - `save_path`: Checkpoint save directory
-- `name`: Experiment name
+- `progressive`: if use curriculum training strategy (default: True)
+- `collect_grad`: if investigate the gradient dynamics (default: False)
+- `ratio`: weight for self-distillation loss (default: 1.0)
+- `use_tokensr`: if use self-distillation loss (default: True)
 - `epochs_per_stage`: Epochs per latent reasoning stage (default: 4)
 - `max_latent_stage`: Maximum latent reasoning stages (default: 5)
 - `resume`: Resume epoch number (default: 0)
-- `batch_size_training`: Batch size per GPU (default: 4)
+- `train_micro_batch_size_per_gpu`: batch_size per GPU (default: 8)
+- `batch_size_training`: totally batch_size (default: 256)
 - `gradient_accumulation_steps`: Gradient accumulation steps (default: 4)
 - `num_epochs`: Total training epochs (default: 16)
 - `lr`: Learning rate (default: 4e-5)
-
+- 
 
 #### Qwen2.5-VL <span id="qwen2-vl"></span>
 
@@ -169,19 +173,24 @@ deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
   --use_tokensr True \
   --pattern 32_patch \
   --model_version v_2_5
+```
 
 #### Arguments
 
 Key parameters in configuration:
 
 - `save_path`: Checkpoint save directory
-- `name`: Experiment name
+- `collect_grad`: if investigate the gradient dynamics (default: False)
+- `ratio`: weight for self-distillation loss (default: 0.5)
+- `use_tokensr`: if use self-distillation loss (default: True)
+- `progressive`: if use curriculum training strategy (default: True)
 - `epochs_per_stage`: Epochs per latent reasoning stage (default: 4)
 - `max_latent_stage`: Maximum latent reasoning stages (default: 5)
 - `resume`: Resume epoch number (default: 0)
-- `batch_size_training`: Batch size per GPU (default: 4)
+- `train_micro_batch_size_per_gpu`: batch_size per GPU (default: 2)
+- `batch_size_training`: totally batch_size (default: 64)
 - `gradient_accumulation_steps`: Gradient accumulation steps (default: 4)
-- `num_epochs`: Total training epochs (default: 16)
+- `num_epochs`: Total training epochs (default: 4)
 - `lr`: Learning rate (default: 4e-5)
 
 

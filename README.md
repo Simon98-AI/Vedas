@@ -141,19 +141,19 @@ deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
 Key parameters in configuration:
 
 - `save_path`: Checkpoint save directory
-- `progressive`: if use curriculum training strategy (default: True)
-- `collect_grad`: if investigate the gradient dynamics (default: False)
-- `ratio`: weight for self-distillation loss (default: 1.0)
-- `use_tokensr`: if use self-distillation loss (default: True)
+- `progressive`: If use curriculum training strategy (default: True)
+- `collect_grad`: If investigate the gradient dynamics (default: False)
+- `ratio`: Weight for self-distillation loss (default: 1.0)
+- `use_tokensr`: If use self-distillation loss (default: True)
 - `epochs_per_stage`: Epochs per latent reasoning stage (default: 4)
 - `max_latent_stage`: Maximum latent reasoning stages (default: 5)
 - `resume`: Resume epoch number (default: 0)
-- `train_micro_batch_size_per_gpu`: batch_size per GPU (default: 8)
-- `batch_size_training`: totally batch_size (default: 256)
+- `train_micro_batch_size_per_gpu`: Batch_size per GPU (default: 8)
+- `batch_size_training`: Totally batch_size (default: 256)
 - `gradient_accumulation_steps`: Gradient accumulation steps (default: 4)
 - `num_epochs`: Total training epochs (default: 16)
 - `lr`: Learning rate (default: 4e-5)
-- 
+- `pattern`: The stategy of using visual latents (default: 32_patch)
 
 #### Qwen2.5-VL <span id="qwen2.5-vl"></span>
 
@@ -181,18 +181,19 @@ deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
 Key parameters in configuration:
 
 - `save_path`: Checkpoint save directory
-- `collect_grad`: if investigate the gradient dynamics (default: False)
-- `ratio`: weight for self-distillation loss (default: 0.5)
-- `use_tokensr`: if use self-distillation loss (default: True)
-- `progressive`: if use curriculum training strategy (default: True)
+- `collect_grad`: If investigate the gradient dynamics (default: False)
+- `ratio`: Weight for self-distillation loss (default: 0.5)
+- `use_tokensr`: If use self-distillation loss (default: True)
+- `progressive`: If use curriculum training strategy (default: True)
 - `epochs_per_stage`: Epochs per latent reasoning stage (default: 4)
 - `max_latent_stage`: Maximum latent reasoning stages (default: 5)
 - `resume`: Resume epoch number (default: 0)
-- `train_micro_batch_size_per_gpu`: batch_size per GPU (default: 2)
-- `batch_size_training`: totally batch_size (default: 64)
+- `train_micro_batch_size_per_gpu`: Batch_size per GPU (default: 2)
+- `batch_size_training`: Totally batch_size (default: 64)
 - `gradient_accumulation_steps`: Gradient accumulation steps (default: 4)
 - `num_epochs`: Total training epochs (default: 4)
 - `lr`: Learning rate (default: 4e-5)
+- `pattern`: The stategy of using visual latents (default: 32_patch)
 
 
 ### 4. Inference <span id="inference"></span>

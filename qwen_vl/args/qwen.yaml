@@ -1,0 +1,17 @@
+project: vegas
+save_path: /xxxx/save_checkpoint
+name: m3cot_VEGAS
+
+epochs_per_stage: 4
+max_latent_stage: 5
+pad_latent_to_max: True
+
+load_model_path: None
+seed: 0 
+resume: 0
+bf16: True
+batch_size_training: 2 # 8
+debug: False
+gradient_accumulation_steps: 4
+num_epochs: 8
+lr: !!float "4e-5"

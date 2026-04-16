@@ -29,7 +29,7 @@ We propose a visual replay module and routing depth scaling to collaboratively e
 
 <div align="center">
   <figure>
-    <img src="framework.png" alt="Overview" style="max-width: 100%; height: auto;">
+    <img src="framework_final_2.pdf" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
     <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
   </figure>
@@ -115,7 +115,7 @@ or download manually from:
 
 #### Qwen2-VL <span id="qwen2-vl"></span>
 
-To train the Qwen2-VL model on the M3CoT dataset and the SciceneQA:
+To train the Qwen2-VL model on the M3CoT, SciceneQA, OneThinker:
 
 ```
 cd qwen_vl

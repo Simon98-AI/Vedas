@@ -206,6 +206,25 @@ Qwen2-VL on M3CoT:
 bash infer_{data_name}.sh
 ```
 
+### 5. Experiment Results
+
+<div align="center">
+  <figure>
+    <img src="./assets/exp_1.png" alt="Overview" style="max-width: 100%; height: auto;">
+    <br>
+    <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
+  </figure>
+</div>
+
+<div align="center">
+  <figure>
+    <img src="./assets/exp_2.png" alt="Overview" style="max-width: 100%; height: auto;">
+    <br>
+    <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
+  </figure>
+</div>
+
+
 ## Acknowledgement
 We would like to thank the following repos for their great work:
 

@@ -69,6 +69,7 @@ Clone repo:
 ```
 git clone https://github.com/Simon98-AI/Vedas.git
 cd Vedas
+pip install -r requirements.txt
 ```
 
 Setup environment:
@@ -81,7 +82,7 @@ conda activate vedas
 Expected folder structure
 
 ```plaintext
-IVT-LR/
+Vedas/
   ├── chameleon
         ├── args/
         ├── chameleon_dataset.py
@@ -90,7 +91,11 @@ IVT-LR/
         ├── args/
         ├── dataset.py
         ├── ...
-  └── environment.yml
+  ├── qwen2_5_vl
+        ├── args/
+        ├── dataset.py
+        ├── ...
+  └── requirements.txt
 ```
 
 ### 2. Data Preparation <span id="data"></span>

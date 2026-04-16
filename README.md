@@ -55,7 +55,6 @@ We propose a visual replay module and routing depth scaling to collaboratively e
     * [Chameleon](#chameleon)
     * [Training Arguments](#arguments)
   * [Inference](#inference)
-* [✨ How It Works](#how-it-works)
 * [🔗 Related Projects](#related)
 * [📚 Citation](#citation)
 
@@ -91,10 +90,6 @@ Vedas/
         ├── args/
         ├── dataset.py
         ├── ...
-  ├── qwen2_5_vl
-        ├── args/
-        ├── dataset.py
-        ├── ...
   └── requirements.txt
 ```
 
@@ -111,6 +106,8 @@ or download manually from:
 
 * [M3CoT](https://huggingface.co/datasets/LightChen2333/M3CoT)
 * [ScienceQA](https://huggingface.co/datasets/derek-thomas/ScienceQA)
+* [OneThinker](https://huggingface.co/datasets/OneThink/OneThinker-train-data)
+
 
 ### 3. Training <span id="training"></span>
 
@@ -124,9 +121,18 @@ To train the Qwen2-VL model on the M3CoT dataset and the SciceneQA:
 cd qwen_vl
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export WANDB_MODE=disabled
-deepspeed --master_port 29505 qwenvl_run_router.py qwen_vl/args/qwen.yaml
-    --deepspeed \\
-    --deepspeed_config ds_config.json
+
+deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
+  --deepspeed \
+  --deepspeed_config ds_config.json \
+  --collect_grad False \
+  --use_data_flag full \
+  --progressive False \
+  --ratio 0.2 \
+  --use_tokensr True \
+  --pattern 32_patch \
+  --model_version v_2
+
 ```
 
 #### Training Arguments <span id="arguments"></span>
@@ -150,20 +156,7 @@ To generate the answer on the test split, run the inference code.
 Qwen2-VL on M3CoT:
 
 ```
-export CUDA_VISIBLE_DEVICES=0
-nohup python infer_mp_m3cot.py > infer.log 2>&1 &  
-```
-
-Qwen2-VL on ScienceQA:
-```
-export CUDA_VISIBLE_DEVICES=0
-nohup python infer_mp_scienceqa.py > infer.log 2>&1 &  
-```
-
-Qwen2-VL on MMVP:
-```
-export CUDA_VISIBLE_DEVICES=0
-nohup python infer_mp_mmvp.py > infer.log 2>&1 &  
+bash infer_{data_name}.sh
 ```
 
 ## 🔗 **Related Projects** <span id="related"></span>

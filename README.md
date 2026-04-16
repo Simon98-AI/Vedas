@@ -40,9 +40,7 @@ We propose a visual replay module and routing depth scaling to collaboratively e
 
 <div style="max-height: 240px; overflow-y: auto;">
 
-- **[2026.01]** Model files are now available on [Hugging Face](https://huggingface.co/collections/ModalityDance/ivt-lr) !
-
-- **[2026.16]** 🎉🎉Initial release of Training Code and Inference Code.
+- **[2026.04]** 🎉🎉Initial release of Training Code and Inference Code.
 
 </div>
 

@@ -115,7 +115,7 @@ or download manually from:
 
 #### Qwen2-VL <span id="qwen2-vl"></span>
 
-To train the Qwen2-VL model on the M3CoT, SciceneQA, OneThinker:
+To train the Qwen2-VL model on M3CoT, SciceneQA, and GQA:
 
 ```
 cd qwen_vl
@@ -135,7 +135,39 @@ deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
 
 ```
 
-#### Training Arguments <span id="arguments"></span>
+Key parameters in configuration:
+
+- `save_path`: Checkpoint save directory
+- `name`: Experiment name
+- `epochs_per_stage`: Epochs per latent reasoning stage (default: 4)
+- `max_latent_stage`: Maximum latent reasoning stages (default: 5)
+- `resume`: Resume epoch number (default: 0)
+- `batch_size_training`: Batch size per GPU (default: 4)
+- `gradient_accumulation_steps`: Gradient accumulation steps (default: 4)
+- `num_epochs`: Total training epochs (default: 16)
+- `lr`: Learning rate (default: 4e-5)
+
+
+#### Qwen2.5-VL <span id="qwen2-vl"></span>
+
+To train the Qwen2-VL model on OneThinker:
+
+```
+cd qwen_vl
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export WANDB_MODE=disabled
+
+deepspeed --master_port 29505 qwenvl_run.py ./qwen_vl/args/qwen.yaml \
+  --deepspeed \
+  --deepspeed_config ds_config.json \
+  --collect_grad False \
+  --use_data_flag full \
+  --progressive True \
+  --ratio 0.5 \
+  --use_tokensr True \
+  --pattern 32_patch \
+  --model_version v_2_5
+
 
 Key parameters in configuration:
 

@@ -29,7 +29,7 @@ We propose a visual replay module and routing depth scaling to collaboratively e
 
 <div align="center">
   <figure>
-    <img src="framework_final_2.pdf" alt="Overview" style="max-width: 100%; height: auto;">
+    <img src="./assets/framework.png" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
     <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
   </figure>
@@ -158,6 +158,11 @@ Qwen2-VL on M3CoT:
 ```
 bash infer_{data_name}.sh
 ```
+
+## Acknowledgement
+We would like to thank the following repos for their great work:
+
+- This work is built upon the [CoCoNut](https://github.com/facebookresearch/coconut) and [IVT-LR](https://github.com/FYYDCC/IVT-LR).
 
 ## 🔗 **Related Projects** <span id="related"></span>
 

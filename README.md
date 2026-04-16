@@ -14,7 +14,7 @@
 
 <!-- HuggingFace Models -->
 
-<a href="">
+<a href="https://huggingface.co/Hechiro/VEGAS_7B">
     <img src="https://img.shields.io/badge/HuggingFace-Models-fcc21b?style=for-the-badge&logo=huggingface&logoColor=white" alt="HF Models">
   </a>
 
@@ -166,8 +166,6 @@ export CUDA_VISIBLE_DEVICES=0
 nohup python infer_mp_mmvp.py > infer.log 2>&1 &  
 ```
 
-```
-
 ## 🔗 **Related Projects** <span id="related"></span>
 
 ### 📄 Related Papers
@@ -175,8 +173,8 @@ nohup python infer_mp_mmvp.py > infer.log 2>&1 &
 - **[Coconut: Training Large Language Models to Reason in a Continuous Latent Space](https://arxiv.org/abs/2412.06769)**  
   A pioneering work on latent reasoning that uses continuous thought representations for LLM reasoning.
 
-- **[Reasoning in the Dark: Interleaved Vision-Text Reasoning in Latent Space](https://arxiv.org/abs/2510.12603)**   
-  A pioneering work on latent reasoning that uses interleaved paradigm for MLLM reasoning.
+- **[Reasoning Within the Mind: Dynamic Multimodal Interleaving in Latent Space](https://arxiv.org/abs/2512.12623)**   
+  A pioneering work on latent reasoning that uses visual latent for enhanced MLLM reasoning.
 
 ### 🌟 Awesome Collections
 

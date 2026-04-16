@@ -212,7 +212,7 @@ bash infer_{data_name}.sh
   <figure>
     <img src="./assets/exp_1.png" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
-    <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
+    <figcaption><em>Results on three CoT Benchmarks.</em></figcaption>
   </figure>
 </div>
 
@@ -220,7 +220,7 @@ bash infer_{data_name}.sh
   <figure>
     <img src="./assets/exp_2.png" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
-    <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
+    <figcaption><em>Results on various Multimodal Benchmarks.</em></figcaption>
   </figure>
 </div>
 

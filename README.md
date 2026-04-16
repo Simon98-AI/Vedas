@@ -52,6 +52,7 @@ We propose a visual replay module and routing depth scaling to collaboratively e
   * [Data Preparation](#data)
   * [Training](#training)
     * [Qwen2-VL](#qwen2-vl)
+    * [Qwen2.5-VL](#qwen2.5-vl)
     * [Chameleon](#chameleon)
     * [Training Arguments](#arguments)
   * [Inference](#inference)
@@ -154,7 +155,7 @@ Key parameters in configuration:
 - `lr`: Learning rate (default: 4e-5)
 - 
 
-#### Qwen2.5-VL <span id="qwen2-vl"></span>
+#### Qwen2.5-VL <span id="qwen2.5-vl"></span>
 
 To train the Qwen2-VL model on OneThinker:
 

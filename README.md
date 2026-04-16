@@ -29,7 +29,7 @@ We propose a visual replay module and routing depth scaling to collaboratively e
 
 <div align="center">
   <figure>
-    <img src="./assets/image.png" alt="Overview" style="max-width: 100%; height: auto;">
+    <img src="framework.png" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
     <figcaption><em>Quick Overview of Our Vedas.</em></figcaption>
   </figure>

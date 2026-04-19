@@ -8,7 +8,7 @@
 
 <!-- Paper Link -->
 
-<a href="">
+<a href="https://arxiv.org/abs/2604.10500">
     <img src="https://img.shields.io/badge/Paper-arXiv-b31b1b?style=for-the-badge&logo=arxiv" alt="Paper">
   </a>
 

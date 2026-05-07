@@ -248,6 +248,9 @@ We would like to thank the following repos for their great work:
 - **[Awesome Latent CoT](https://github.com/EIT-NLP/Awesome-Latent-CoT)**  
   A comprehensive list of latent chain-of-thought reasoning resources.
 
+- **[Awesome Latent Refinement](https://github.com/matinaghaei/awesome-latent-refinement)**
+  A curated list of research on latent refinement, looped reasoning models, and inference-time scaling.
+
 
 ## 📚 **Citation** <span id="citation"></span>
 

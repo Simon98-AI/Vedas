@@ -87,7 +87,7 @@ class Qwen2VLCausalLMOutputWithPast(ModelOutput):
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
-        rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):
+        rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):DDynamic
             The rope index difference between sequence length and multimodal rope.
     """
 
@@ -672,7 +672,7 @@ class Qwen2VLDecoderLayer(nn.Module):
         if output_attentions:
             outputs += (self_attn_weights,)
 
-        if use_cache: 
+        if use_cache: # 保存每一层的kv_cache
             outputs += (present_key_value,)
 
         return outputs
@@ -687,39 +687,24 @@ class TokenRouter(nn.Module):
         # x: [bs, seq_len, hidden_size]
         return self.router(x).squeeze(-1)  # [batch_size, seq_len]
 
-# class TokenRouter(nn.Module):
-#     def __init__(self, config):
-#         super().__init__()
-#         self.router = nn.Sequential(
-#             nn.Linear(config.hidden_size, config.hidden_size),
-#             nn.ReLU(),
-#             nn.Linear(config.hidden_size, 1),
-#         )
-
-#     def forward(self, x):
-#         # x: [bs, seq_len, hidden_size]
-#         return self.router(x).squeeze(-1)  # [batch_size, seq_len]
-
 class Qwen2VLDecoderLayerDynamic(nn.Module):
-    """
-    Enhanced decoder layer with per-token dynamic depth control:
-    - Each token independently chooses: 0=skip, 1=execute once, 2=execute twice
-    - Routing guided by global context (mean of all tokens)
-    - Correct handling of attention masks, position IDs, and KV cache
-    - Efficient masked execution (no per-token loops)
-    """
+
     def __init__(self, config, layer_idx: int):
         super().__init__()
+        self.config = config
         self.hidden_size = config.hidden_size
         self.layer_idx = layer_idx
+
         self.self_attn = Qwen2VLAttention(config, layer_idx)
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
+
         self.router = TokenRouter(config)
-        self.config = config
-        self.enable_router = True  # Can be disabled for ablation studies
+        self.enable_router = True  
+
+        self.top_k = 32
+        self.dump_router_logits = False
 
     def _forward_block(
         self,
@@ -732,11 +717,11 @@ class Qwen2VLDecoderLayerDynamic(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        """Single execution of the standard decoder block (attention + MLP with residuals)"""
+
+        # Self-Attention
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        
-        hidden_states, self_attn_weights, present_key_value = self.self_attn( 
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -746,13 +731,14 @@ class Qwen2VLDecoderLayerDynamic(nn.Module):
             cache_position=cache_position,
             position_embeddings=position_embeddings,
         )
-        hidden_states = residual + hidden_states  # First residual (attention)
-        
+        hidden_states = residual + hidden_states
+
+        # MLP
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states  # Second residual (MLP)
-        
+        hidden_states = residual + hidden_states
+
         return hidden_states, self_attn_weights, present_key_value
 
     def forward(
@@ -763,83 +749,95 @@ class Qwen2VLDecoderLayerDynamic(nn.Module):
         target_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-
         B, S, D = hidden_states.shape
 
-        hidden_states, attn_weights, pkv = self._forward_block(
+        hidden_states, self_attn_weights, present_key_value = self._forward_block(
             hidden_states=hidden_states,
-            attention_mask=attention_mask, # attention_mask: [bs, num_head, seq_len, seq_len]
-            position_ids=position_ids,
+            attention_mask=attention_mask,  # [B, 1, S, S]
+            position_ids=position_ids,      # (3, B, S) 3D mrope
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
-            position_embeddings=position_embeddings)  
-
-        residual = hidden_states
-
-        decision_probs = self.router(hidden_states)
-        router_logits = F.softmax(decision_probs, dim=1) # [bs, seq_len]
-        max_top_k_length = 32
-        top_k_lengths = torch.ones((B, max_top_k_length), device=hidden_states.device)
-
-        top_k_lengths = top_k_lengths.sum(-1).int()
-        _ , router_indices = torch.topk(router_logits, max_top_k_length, dim=1, sorted=True) # [batchsize,  max_top_k_length]
-        kept_mod_target_tokens_mask = torch.zeros(B, S, dtype=torch.bool, device=hidden_states.device)
-        top_k_mask = torch.arange(max_top_k_length, device=hidden_states.device).unsqueeze(0) < top_k_lengths.unsqueeze(1) # [batch_size, seq_len]
-        kept_mod_target_tokens_mask.scatter_(
-            dim = 1,
-            index = router_indices,
-            src = top_k_mask # mask values since we take different top_k values for each row
-        )
-        kept_tokens_mask = kept_mod_target_tokens_mask.clone() # [batch_size, seq_length]
-        hidden_states = hidden_states.clone()
-
-        kept_tokens_lengths = kept_tokens_mask.sum(dim=1).int() # [batchsize,] , the number of kept tokens in each example in the batch
-        kept_tokens = torch.split(hidden_states[kept_tokens_mask], kept_tokens_lengths.tolist()) # hidden_states[kept_tokens_mask] 高级索引，先拉成一排
-        kept_tokens = nn.utils.rnn.pad_sequence(kept_tokens, batch_first=True) # [batch_size, max_kept_length, hidden_dim]
-
-        final_kept_positions = []
-        for i in range(B):
-            idxs = torch.where(kept_tokens_mask[i])[0]
-            segment = position_ids[:, i, idxs]
-            final_kept_positions.append(segment)
-
-        all_positions = torch.stack(final_kept_positions) 
-        new_position_ids = all_positions.permute(1, 0, 2).contiguous() # (B, 3, K) -> (3, B, K)
-
-        B, K = kept_tokens.shape[:2]
-
-        causal_mask = torch.triu(torch.full((K, K), torch.finfo(hidden_states.dtype).min, device=hidden_states.device), diagonal=1)
-        kept_attention_mask = causal_mask[None, None, :, :].expand(B, 1, -1, -1)
-
-        position_embeddings = self.self_attn.rotary_emb(kept_tokens, new_position_ids)
-
-        hidden_states_step1, attn_weights_1, _ = self._forward_block(
-            hidden_states=kept_tokens,
-            attention_mask=kept_attention_mask,
-            position_ids=new_position_ids,
-            past_key_value=None, 
-            output_attentions=output_attentions,
-            use_cache=False,             
-            cache_position=None,    
-            position_embeddings=position_embeddings,     
+            position_embeddings=position_embeddings,
         )
 
-        ## dynamic fusion ###
-        for i in range(B):
-            indices = router_indices[i][:kept_tokens_lengths[i]]  # [k_i]
-            hidden_states[i, indices] = (hidden_states_step1[i, :kept_tokens_lengths[i]] * router_logits[i, indices].unsqueeze(-1) + residual[i, indices])
+        if self.enable_router:
+            hidden_states = self._inner_thinking_step(
+                hidden_states=hidden_states,
+                position_ids=position_ids,
+                output_attentions=output_attentions,
+            )
 
-        outputs = (hidden_states, attn_weights, pkv)
-
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (self_attn_weights,)
+        if use_cache:
+            outputs += (present_key_value,)
         return outputs
+
+    def _inner_thinking_step(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: Optional[torch.LongTensor],
+        output_attentions: bool = False,
+    ) -> torch.Tensor:
+
+        B, S, D = hidden_states.shape
+        device = hidden_states.device
+        residual = hidden_states  # Step 1 的输出，作为融合残差
+
+        # ----- router 打分并挑选 top-k -----
+        token_scores = self.router(hidden_states)          # [B, S]
+        router_weights = F.softmax(token_scores, dim=-1)   # [B, S] 门控权重
+
+        if self.dump_router_logits:
+            with open("./router_logits_{}.pkl".format(self.layer_idx), "wb") as f:
+                pickle.dump(
+                    router_weights.detach().float().cpu().numpy(), f, protocol=pickle.HIGHEST_PROTOCOL
+                )
+
+        k = min(self.top_k, S)
+        topk_indices = torch.topk(router_weights, k, dim=1).indices          # [B, k] 按分数排序
+        topk_indices, _ = torch.sort(topk_indices, dim=1)                    # [B, k] 按位置升序
+        batch_idx = torch.arange(B, device=device).unsqueeze(1)             # [B, 1]
+
+        kept_hidden = residual[batch_idx, topk_indices]
+        gather_idx = topk_indices.unsqueeze(0).expand(position_ids.shape[0], -1, -1)  # (3, B, k)
+        kept_position_ids = torch.gather(position_ids, dim=2, index=gather_idx)       # (3, B, k)
+
+        kept_position_embeddings = self.self_attn.rotary_emb(kept_hidden, kept_position_ids)
+
+        min_dtype = torch.finfo(kept_hidden.dtype).min
+        causal = torch.triu(
+            torch.full((k, k), min_dtype, device=device, dtype=kept_hidden.dtype), diagonal=1
+        )
+        kept_attention_mask = causal[None, None, :, :].expand(B, 1, k, k)
+
+        refined_hidden, _, _ = self._forward_block(
+            hidden_states=kept_hidden,
+            attention_mask=kept_attention_mask,
+            position_ids=kept_position_ids,
+            past_key_value=None,          # 辅助迭代，不写 KV cache
+            output_attentions=output_attentions,
+            use_cache=False,
+            cache_position=None,
+            position_embeddings=kept_position_embeddings,
+        )
+
+        gate = router_weights[batch_idx, topk_indices].unsqueeze(-1)  # [B, k, 1]
+        fused = refined_hidden * gate + kept_hidden                   # [B, k, D]
+
+        hidden_states = residual.clone()
+        hidden_states[batch_idx, topk_indices] = fused
+        return hidden_states
+
 
     # Copied from transformers.models.phi3.modeling_phi3.Phi3Model._update_causal_mask with Phi3->Qwen2VL
     def _update_causal_mask(
@@ -968,20 +966,23 @@ class Qwen2VLDecoderLayerDynamic(nn.Module):
 class GradientCollector:
     def __init__(self):
         self.hooks = []
-        # dict: { epoch_idx: { layer_idx: [batch_grad_norms] } }
+        # 数据结构：{ epoch_idx: { layer_idx: [batch_grad_norms] } }
+        # 为了节省内存，我们在每个 step 后直接按 batch 维度平均，只保留 (seq_len)
         self.storage: Dict[int, Dict[int, List[torch.Tensor]]] = {}
         self.current_epoch = 0
         self.is_tracking = False
 
     def register_layer(self, layer: nn.Module, layer_idx: int):
-
+        """为特定层注册反向传播钩子"""
         def hook_fn(module, grad_input, grad_output):
             if not self.is_tracking:
                 return
             
-            # grad_input[0] (batch, seq_len, hidden_size)
+            # grad_input[0] 通常对应 hidden_states 的梯度 (batch, seq_len, hidden_size)
             if grad_input and grad_input[0] is not None:
                 grad = grad_input[0]
+                # 计算每个 token 的梯度范数 (over hidden_size dimension)
+                # 结果形状：(batch, seq_len)
                 token_norms = torch.norm(grad, p=2, dim=-1).detach().cpu()
                 
                 if self.current_epoch not in self.storage:
@@ -991,9 +992,10 @@ class GradientCollector:
                 
                 self.storage[self.current_epoch][layer_idx].append(token_norms)
         
+        # 注册钩子
         handle = layer.register_full_backward_hook(hook_fn)
         self.hooks.append(handle)
-        print(f"Registered gradient hook for Layer {layer_idx}")
+        # print(f"Registered gradient hook for Layer {layer_idx}")
 
     def start_epoch(self, epoch: int):
         self.current_epoch = epoch
@@ -1002,37 +1004,51 @@ class GradientCollector:
             self.storage[epoch] = {}
 
     def end_epoch(self):
+        """Epoch 结束时，对当前 Epoch 的数据进行聚合 (平均过 Batch)"""
         self.is_tracking = False
         if self.current_epoch in self.storage:
             for layer_idx in self.storage[self.current_epoch]:
                 batch_norms = self.storage[self.current_epoch][layer_idx]
+                # 将所有 batch 的数据堆叠并平均：(num_batches, batch_size, seq_len) -> (seq_len)
                 if len(batch_norms) > 0:
+                    # --- 修复开始：处理变长序列 ---
+                    # 检查所有 tensor 的序列长度 (dim=1) 是否一致
                     seq_lens = [t.shape[1] for t in batch_norms]
+                    
                     if len(set(seq_lens)) == 1:
-
+                        # 如果长度一致，使用原始逻辑 (效率更高)
                         stacked = torch.cat(batch_norms, dim=0)
                         averaged = stacked.mean(dim=0)
                     else:
+                        # 如果长度不一致 (VL 模型常见情况)，使用累加和计数的方式计算平均值
+                        # 这样可以避免 padding 0 导致平均值被拉低，也能利用长序列的数据
                         device = batch_norms[0].device
                         dtype = batch_norms[0].dtype
                         max_len = max(seq_lens)
+                        # 初始化累加和 tensor 和 计数 tensor
                         total_sum = torch.zeros(max_len, device=device, dtype=dtype)
                         total_count = torch.zeros(max_len, device=device, dtype=torch.float32)
                         for t in batch_norms:
                             curr_len = t.shape[1]
                             batch_size = t.shape[0]
+                            # 1. 将当前 batch 沿 batch_dim (dim=0) 求和，得到 (seq_len,)
+                            # 2. 累加到总和中 (只累加有效长度部分)
                             total_sum[:curr_len] += t.sum(dim=0)
+                            # 3. 计数增加当前 batch 的大小 (只增加有效长度部分)
                             total_count[:curr_len] += batch_size
                         
+                        # 防止除以 0 (虽然逻辑上不会出现，但为了安全)
                         total_count = total_count.clamp(min=1)
+                        # 计算真正的平均值
                         averaged = total_sum / total_count
+                    # --- 修复结束 ---
                     
                     self.storage[self.current_epoch][layer_idx] = averaged
                 else:
                     self.storage[self.current_epoch][layer_idx] = None
 
     def clear(self):
-
+        """清除所有钩子"""
         for h in self.hooks:
             h.remove()
         self.hooks.clear()
@@ -1043,42 +1059,73 @@ class GradientCollector:
 
 
 class AttentionGradientCollector:
-
+    """
+    收集 Qwen2VLAttention 中 Q/K/V/O 映射层的参数梯度核范数
+    使用 Parameter Hook (register_hook) 获取准确的参数梯度
+    支持按 epoch 和 layer_idx 组织
+    """
     
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, training_mode: str = "lora"):
         self.model = model
+        self.training_mode = training_mode
         self.hooks = []
-        # dict: {epoch: {layer_idx: [batch_stats]}}
+        # 存储结构：{epoch: {layer_idx: [batch_stats]}}
         self.storage = defaultdict(lambda: defaultdict(list))
         self.current_epoch = 0
         self.is_tracking = False
         
-
-        self.target_params = {
-            'q_proj.lora_A': 'W_Q_A', 'q_proj.lora_B': 'W_Q_B',
-            'k_proj.lora_A': 'W_K_A', 'k_proj.lora_B': 'W_K_B',
-            'v_proj.lora_A': 'W_V_A', 'v_proj.lora_B': 'W_V_B',
-            'o_proj.lora_A': 'W_O_A', 'o_proj.lora_B': 'W_O_B',
+        self.target_params_by_mode = {
+            "lora": {
+                'q_proj.lora_A': 'W_Q_A', 'q_proj.lora_B': 'W_Q_B',
+                'k_proj.lora_A': 'W_K_A', 'k_proj.lora_B': 'W_K_B',
+                'v_proj.lora_A': 'W_V_A', 'v_proj.lora_B': 'W_V_B',
+                'o_proj.lora_A': 'W_O_A', 'o_proj.lora_B': 'W_O_B',
+            },
+            "full_sft": {
+                'q_proj.weight': 'W_Q', 'k_proj.weight': 'W_K',
+                'v_proj.weight': 'W_V', 'o_proj.weight': 'W_O',
+                'q_proj.bias': 'W_Q_bias', 'k_proj.bias': 'W_K_bias',
+                'v_proj.bias': 'W_V_bias',
+            },
         }
+        self._set_target_params(training_mode)
         
+        # 🔥 核范数统计键名（与 end_epoch 保持一致）
         self.metric_keys = ['nuclear_norm', 'spectral_norm', 'complexity_ratio', 'effective_rank']
+
+    def _set_target_params(self, training_mode: str):
+        if training_mode not in self.target_params_by_mode:
+            raise ValueError(f"Unsupported attention gradient collection mode: {training_mode}")
+        self.training_mode = training_mode
+        self.target_params = self.target_params_by_mode[training_mode]
+
+    def set_training_mode(self, training_mode: str):
+        """Select the parameter naming scheme used by the gradient hooks."""
+        if self.is_tracking:
+            self.end_tracking()
+        self._set_target_params(training_mode)
+        # print(f"Attention gradient collection mode: {training_mode}")
         
     def start_tracking(self, epoch: int = 0):
-
+        """开始跟踪梯度"""
         self.current_epoch = epoch
         self.is_tracking = True
         self._register_hooks()
+        # print(f"🔍 开始跟踪 Epoch {epoch}")
             
     def gradient_nuclear_norm(self, grad: torch.Tensor) -> tuple:
-
-
+        """
+        计算梯度矩阵的核范数及相关统计
+        🔥 修复：使用 torch.linalg.svd，处理数值稳定性
+        """
+        # Projection weights are 2D matrices; biases are handled as vectors.
         if grad.dim() == 2:
             grad_2d = grad
         elif grad.dim() > 2:
-
+            # 对于多维梯度，按最后两维作为矩阵
             grad_2d = grad.view(-1, grad.shape[-1])
         else:
-
+            # 1D 梯度（如 bias），核范数 = L2 范数
             return grad.norm().item(), {
                 'nuclear_norm': grad.norm().item(),
                 'spectral_norm': grad.norm().item(),
@@ -1086,11 +1133,12 @@ class AttentionGradientCollector:
                 'effective_rank': 1.0
             }
         
-
+        # 🔥 修复：使用 torch.linalg.svd（更稳定，支持 GPU）
         try:
             singular_values = torch.linalg.svd(grad_2d.float()).S
 
         except RuntimeError as e:
+            print(f"⚠️ SVD 计算失败: {e}，回退到 L2 范数")
             norm = grad.norm().item()
             return norm, {
                 'nuclear_norm': norm,
@@ -1099,18 +1147,18 @@ class AttentionGradientCollector:
                 'effective_rank': 1.0
             }
         
-
+        # 确保奇异值非负（数值误差可能导致微小负值）
         singular_values = singular_values.clamp(min=0)
         
-
+        # 核范数 = 奇异值之和
         nuclear_norm = singular_values.sum().item()
         spectral_norm = singular_values[0].item() if len(singular_values) > 0 else 0.0
         
-
+        # 有效秩 = (Σσ_i)² / Σσ_i²（衡量奇异值分布的"稀疏度"）
         sum_sq = (singular_values ** 2).sum()
         effective_rank = (singular_values.sum() ** 2).item() / (sum_sq.item() + 1e-8)
         
-
+        # 复杂度比值 = 核范数 / 谱范数（越大表示梯度更新方向越丰富）
         complexity_ratio = nuclear_norm / (spectral_norm + 1e-8)
         
         stats = {
@@ -1122,14 +1170,16 @@ class AttentionGradientCollector:
         return nuclear_norm, stats
 
     def _register_hooks(self):
-
+        """为所有 Attention 层的 target 参数注册 hook"""
         def make_hook(layer_idx: int, param_name: str):
             def hook_fn(grad: torch.Tensor):
                 if not self.is_tracking or grad is None:
                     return
                 
+                # 🔥 修复：计算核范数统计
                 _, stats = self.gradient_nuclear_norm(grad)
                 
+                # 🔥 修复：保存 param_name 和 layer_idx，供 end_epoch 分组使用
                 stats['param_name'] = param_name
                 stats['layer_idx'] = layer_idx
                 
@@ -1138,11 +1188,13 @@ class AttentionGradientCollector:
         
         registered_count = 0
         
+        # 🔥 遍历整个 model 的参数
         for name, param in self.model.named_parameters():
-
+            # 🔥 修复：更鲁棒的参数名匹配逻辑
             if 'self_attn' not in name or not param.requires_grad:
                 continue
             
+            # 检查是否匹配目标参数（支持带/不带 .default 的格式）
             matched_key = None
             for key in self.target_params.keys():
                 if key in name:
@@ -1152,7 +1204,7 @@ class AttentionGradientCollector:
             if matched_key is None:
                 continue
             
-
+            # 🔥 修复：更鲁棒的 layer_idx 解析
             parts = name.split('.')
             layer_idx = None
             try:
@@ -1161,36 +1213,46 @@ class AttentionGradientCollector:
                     if idx_pos + 1 < len(parts) and parts[idx_pos + 1].isdigit():
                         layer_idx = int(parts[idx_pos + 1])
                 elif len(parts) > 1 and parts[0].isdigit():
-
+                    # 兼容格式：25.self_attn...
                     layer_idx = int(parts[0])
             except (ValueError, IndexError):
                 pass
             
             if layer_idx is None:
+                print(f"⚠️ 无法解析 layer_idx: {name}")
                 continue
             
+            # 🔥 修复：从 matched_key 提取 param_name（如 'q_proj.lora_B'）
             param_name = matched_key
             
+            # 注册 hook
             hook = param.register_hook(make_hook(layer_idx, param_name))
             self.hooks.append(hook)
             registered_count += 1
-            print(f"Registered hook: {name} → layer {layer_idx} [{param_name}]")
+            # print(f"✅ Registered hook: {name} → layer {layer_idx} [{param_name}]")
         
+        # print(f"📊 总共注册了 {registered_count} 个 Attention 梯度 hooks")
+        if registered_count == 0:
+            print("❌ 警告：没有注册任何 hooks！请检查参数名匹配条件")
 
     def end_tracking(self):
-
+        """结束跟踪，移除 hooks"""
         self.is_tracking = False
         for hook in self.hooks:
             hook.remove()
         self.hooks.clear()
         
     def end_epoch(self):
-
+        """
+        Epoch 结束时聚合数据
+        返回：{layer_idx: {param_name: averaged_stats}}
+        """
         self.end_tracking()
         
         aggregated = {}
         
         if self.current_epoch not in self.storage:
+            print(f"⚠️ Epoch {self.current_epoch} 无数据")
             return aggregated
         
         for layer_idx in self.storage[self.current_epoch]:
@@ -1199,45 +1261,56 @@ class AttentionGradientCollector:
             if len(batch_stats_list) == 0:
                 continue
             
+            # 🔥 修复：按 param_name 分组
             param_groups = defaultdict(list)
             for stats in batch_stats_list:
                 if 'param_name' not in stats:
                     continue
                 param_groups[stats['param_name']].append(stats)
             
+            # 对每个参数计算平均值
             layer_agg = {}
             for param_name, stats_list in param_groups.items():
                 avg_stats = {}
                 
+                # 🔥 修复：聚合核范数相关指标（与 hook 中保存的键名一致）
                 for key in self.metric_keys:
                     values = [s[key] for s in stats_list if key in s]
                     avg_stats[f'avg_{key}'] = sum(values) / len(values) if values else 0.0
                     avg_stats[f'std_{key}'] = torch.std(torch.tensor(values)).item() if len(values) > 1 else 0.0
                 
+                # 保留形状信息（如果有）
                 if 'shape' in stats_list[0]:
                     avg_stats['shape'] = stats_list[0]['shape']
                 
+                # 记录 batch 数量
                 avg_stats['num_batches'] = len(stats_list)
                 
                 layer_agg[param_name] = avg_stats
             
             aggregated[layer_idx] = layer_agg
         
+        # 清空当前 epoch 存储，释放内存
         if self.current_epoch in self.storage:
             del self.storage[self.current_epoch]
         
+        print(f"✅ Epoch {self.current_epoch} 聚合完成：{len(aggregated)} layers")
         return aggregated
     
     def _save_epoch_aggregated(self, data: Dict, filepath: Optional[str] = None):
+        """保存聚合结果到 pickle"""
         if filepath is None:
             filepath = f"./grad_nuclear_epoch_{self.current_epoch}.pkl"
         
+        # 确保目录存在
         os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
         
         with open(filepath, 'wb') as f:
             pickle.dump(data, f)
+        print(f"💾 已保存 epoch {self.current_epoch} 梯度核范数统计：{filepath}")
 
     def get_all_epochs_data(self) -> Dict[int, Dict[int, Dict]]:
+        """获取所有已聚合的 epoch 数据"""
         return dict(self.storage)
  
 class Qwen2VLPreTrainedModel(PreTrainedModel):

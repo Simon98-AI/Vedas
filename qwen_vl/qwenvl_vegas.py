@@ -30,10 +30,6 @@ import torch.nn.functional as F
 from PIL import Image
 
 def save_tensor_as_png(tensor, path):
-    """
-    将 [C, H, W] 的 Tensor 保存为 PNG 图片
-    支持 1 通道 (灰度) 和 3 通道 (RGB)
-    """
     # 1. 转到 CPU 并转为 numpy
     img = tensor.detach().cpu().numpy()  # [C, H, W]
     
@@ -54,7 +50,6 @@ def save_tensor_as_png(tensor, path):
     # 4. 创建 PIL 图片并保存
     pil_img = Image.fromarray(img)
     pil_img.save(path, format='PNG')
-
 
 def save_latents(inputs_embeds, latent_indices, image_mask):
     data_dict = {}
@@ -109,7 +104,8 @@ class IVTLR(nn.Module):
 
         self.mse = nn.MSELoss(reduction='mean')
         self.model_size = model_path.split('-')[-2] # Qwen2-VL-7B-Instruct
-
+        # self.tokenSR = TransposeConvSuperRes()
+        # self.tokenSR = TokenSRNet()
         if self.model_size == '2B':
             self.tokenSR = nn.Sequential(
                 nn.Linear(1536, 1536),
@@ -134,6 +130,8 @@ class IVTLR(nn.Module):
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.use_tokensr = args.use_tokensr
         self.with_visual_latent = getattr(args, "use_visual_latent", True)
+        # TokenSR 拼图时参与的高注意力 3x3 窗口数（多区域覆盖多个注意力热点）
+        self.num_sr_regions = getattr(args, "num_sr_regions", 4)
 
     def forward(
         self,
@@ -150,7 +148,6 @@ class IVTLR(nn.Module):
     
         B, S = input_ids.size()
         output = self.processor.tokenizer.batch_decode(input_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
-
         inputs_embeds = self.embedding(input_ids)  # (B, S, D)
 
         original_mask = torch.ones((B, S), dtype=torch.bool, device=input_ids.device)
@@ -162,7 +159,6 @@ class IVTLR(nn.Module):
         ve_pos_per_batch = {b.item(): ve_indices[1][i].item() for i, b in enumerate(ve_indices[0])}
 
         # if self.base_causallm.training:
-
         if pixel_values is not None:
             if self.args.model_version == 'v_2.5':
                 model_dtype = next(self.base_causallm.visual.parameters()).dtype
@@ -211,11 +207,11 @@ class IVTLR(nn.Module):
 
         kv_cache = None
         all_logits = []
-
+        # 累计所有 latent pass 的 TokenSR loss。
         tokensr_losses = []
         if max_n_latents > 0:
             for pass_idx in range(max_n_latents): # 迭代max_n_latents次数
-         
+                # print("=======================================================", pass_idx, "======================================================================")
                 start = 0
                 hidden_states_offset = 0
                 if kv_cache is None:
@@ -244,9 +240,11 @@ class IVTLR(nn.Module):
                 logits_this = outputs.logits # [B, origi_S, V]                 
                 hidden_states = outputs.hidden_states[-1]
                 attentions    = outputs.attentions   # list of (B, heads, seq_len, seq_len), attention[layer_idx]代表第layer_idx层
+                # attention 前面的都比较分散 # 
                 kv_cache      = outputs.past_key_values
                 all_logits.append(logits_this)
 
+                # === 1. 每次迭代获取 Top-K 的视觉token（仅当有图像时执行）===
                 if pixel_values is not None and self.with_visual_latent:
                     avg_attn = torch.cat(attentions, dim=1).mean(dim=1)  # (B, heads*Layer, seq_len, seq_len)
                     current_seq_len = avg_attn.size(1)
@@ -260,9 +258,6 @@ class IVTLR(nn.Module):
                         scores[invalid] = float("-inf")
                         rel_scores = scores[vs+1 : ve]  # (image_len,)
 
-                        # save the attention score
-                        # reshape_and_interpolate_scores(rel_scores=rel_scores.float().detach().cpu().numpy(), original_shape=(280, 280), target_grid=(10, 10), save_path='./case_scores_280x280_{}.pkl'.format(pass_idx))
-                        
                         if self.original_selected_patches >= rel_scores.size(0):
                             original_selected_patches = rel_scores.size(0) - 1
                         else:
@@ -273,56 +268,83 @@ class IVTLR(nn.Module):
                         # original_selected_patches = 0
                         
                         if self.use_tokensr:
-                            GRID_SIZE = 10
-                            WINDOW_SIZE = 4
-                            best_r, best_c = 0, 0
-                            max_count = -1
+                            WINDOW_SIZE = 3
+                            NUM_REGIONS = self.num_sr_regions  # 参与拼图的窗口数
+                            L = rel_scores.size(0)
+                            # 用 ceil 保证 GRID_SIZE^2 >= L，token 的行列索引不会越界
+                            _g = int(L ** 0.5)
+                            GRID_SIZE = _g if _g * _g >= L else _g + 1
+                            smap = rel_scores.clone().float()
+                            smap[~torch.isfinite(smap)] = 0.0
+                            grid_area = GRID_SIZE * GRID_SIZE
+                            if smap.numel() < grid_area:
+                                smap = F.pad(smap, (0, grid_area - smap.numel()))
+                            else:
+                                smap = smap[:grid_area]
+                            smap2d = smap.reshape(1, 1, GRID_SIZE, GRID_SIZE)
+                            win_sum = F.avg_pool2d(smap2d, kernel_size=WINDOW_SIZE, stride=1) * (WINDOW_SIZE ** 2)
+                            win_sum = win_sum[0, 0] 
+                            P = GRID_SIZE - WINDOW_SIZE + 1
 
-                            rows = topk_rel // GRID_SIZE
-                            cols = topk_rel % GRID_SIZE
+                            # NMS
+                            order = torch.argsort(win_sum.reshape(-1), descending=True).tolist()
+                            occupied = torch.zeros(GRID_SIZE, GRID_SIZE, dtype=torch.bool, device=win_sum.device)
+                            chosen = []
+                            for flat_pos in order:
+                                r, c = flat_pos // P, flat_pos % P
+                                if occupied[r:r + WINDOW_SIZE, c:c + WINDOW_SIZE].any():
+                                    continue
+                                chosen.append((r, c))
+                                occupied[r:r + WINDOW_SIZE, c:c + WINDOW_SIZE] = True
+                                if len(chosen) >= NUM_REGIONS:
+                                    break
 
-                            for r in range(GRID_SIZE - WINDOW_SIZE + 1):
-                                for c in range(GRID_SIZE - WINDOW_SIZE + 1):
-                                    in_window = (rows >= r) & (rows < r + WINDOW_SIZE) & \
-                                                (cols >= c) & (cols < c + WINDOW_SIZE)
-                                    count = in_window.sum().item()
-                                    if count > max_count:
-                                        max_count = count
-                                        best_r, best_c = r, c
+                            sel_rows = topk_rel // GRID_SIZE
+                            sel_cols = topk_rel % GRID_SIZE
+                            sr_in_region_mask = occupied[sel_rows, sel_cols]  # (K,) bool，与 topk_rel/low_embeds 同序
 
                             if ori_image.dim() == 3:
                                 ori_image = ori_image.unsqueeze(0)
                             orig_img_b = ori_image[b]
                             C, H_orig, W_orig = orig_img_b.shape
 
-                            x1 = int(best_c * (W_orig / GRID_SIZE))
-                            y1 = int(best_r * (H_orig / GRID_SIZE))
-                            x2 = int((best_c + WINDOW_SIZE) * (W_orig / GRID_SIZE))
-                            y2 = int((best_r + WINDOW_SIZE) * (H_orig / GRID_SIZE))
-                            x1, y1 = max(0, x1), max(0, y1)
-                            x2, y2 = min(W_orig, x2), min(H_orig, y2)
+                            n_reg = max(1, len(chosen))
+                            cols = int(n_reg ** 0.5)
+                            cols = cols + 1 if cols * cols < n_reg else cols
+                            cols = max(1, cols)
+                            rows = (n_reg + cols - 1) // cols
+                            tile_h, tile_w = H_orig // rows, W_orig // cols  
 
-                            crop_tensor = orig_img_b[:, y1:y2, x1:x2]
-                            # bilinear interpolation 不支持 Long 整数张量，先转为浮点像素。
-                            crop_tensor_batch = crop_tensor.unsqueeze(0).to(dtype=torch.float32)
-                            if crop_tensor_batch.max() > 1.0:
-                                crop_tensor_batch = crop_tensor_batch / 255.0
-                            resized_tensor = F.interpolate(
-                                crop_tensor_batch, size=(H_orig, W_orig), mode='bilinear', align_corners=False
-                            ).squeeze(0)
-                            
-                            # save_tensor_as_png(resized_tensor, '/mnt/workspace/hanyudong/code/IVT-LR-main/qwen_vl/vis_out/resized_output_{}.png'.format(pass_idx))
-                            # save_tensor_as_png(orig_img_b, '/mnt/workspace/hanyudong/code/IVT-LR-main/qwen_vl/vis_out/full.png')
+                            canvas = torch.zeros(C, rows * tile_h, cols * tile_w,
+                                                 dtype=torch.float32, device=orig_img_b.device)
+                            for i, (r, c) in enumerate(chosen):
+                                x1 = int(c * (W_orig / GRID_SIZE))
+                                y1 = int(r * (H_orig / GRID_SIZE))
+                                x2 = int((c + WINDOW_SIZE) * (W_orig / GRID_SIZE))
+                                y2 = int((r + WINDOW_SIZE) * (H_orig / GRID_SIZE))
+                                x1, y1 = max(0, x1), max(0, y1)
+                                x2, y2 = min(W_orig, x2), min(H_orig, y2)
+                                crop = orig_img_b[:, y1:y2, x1:x2].to(dtype=torch.float32)
+                                if crop.numel() == 0:
+                                    continue
+                                if crop.max() > 1.0:
+                                    crop = crop / 255.0
 
-                            to_pil = transforms.ToPILImage()
-                            resized_pil = to_pil(resized_tensor)
+                                crop = F.interpolate(crop.unsqueeze(0), size=(tile_h, tile_w),
+                                                     mode='bilinear', align_corners=False).squeeze(0)
+                                gr, gc = i // cols, i % cols
+                                canvas[:, gr * tile_h:(gr + 1) * tile_h, gc * tile_w:(gc + 1) * tile_w] = crop
 
+  
+
+                            collage_pil = transforms.ToPILImage()(canvas)
                             crop_inputs = self.processor(
-                                text=[""], images=[resized_pil], padding=True, return_tensors="pt"
+                                text=[""], images=[collage_pil], padding=True, return_tensors="pt"
                             ).to(avg_attn.device)
-
+                 
                             visual_dtype = next(self.base_causallm.visual.parameters()).dtype
                             crop_inputs['pixel_values'] = crop_inputs['pixel_values'].to(dtype=visual_dtype)
+                     
                             with torch.no_grad():
                                 tokenSR_embeds = self.base_causallm.visual(
                                     crop_inputs['pixel_values'],
@@ -330,7 +352,7 @@ class IVTLR(nn.Module):
                                 )
                                 gt_tokenSR = tokenSR_embeds.mean(dim=0, keepdim=True)
                         else:
-                            gt_tokenSR = None  # 不使用 TokenSR 时的占位
+                            gt_tokenSR = None 
 
                         abs_idxs = (vs + 1) + topk_rel
                         image_mask[b, abs_idxs] = False  # 避免重复选择
@@ -343,13 +365,17 @@ class IVTLR(nn.Module):
                             picked = low_embeds * topk_score.unsqueeze(-1)  # (K, D)
 
                         if self.use_tokensr and gt_tokenSR is not None:
-                            low_embeds_pool = (
-                                low_embeds * topk_score.unsqueeze(-1)
-                            ).sum(dim=0, keepdim=True)
+
+                            if sr_in_region_mask.any():
+                                low_embeds_pool = low_embeds[sr_in_region_mask].mean(dim=0, keepdim=True)
+                            else:
+                                low_embeds_pool = low_embeds.mean(dim=0, keepdim=True)
+ 
                             sr_dtype = next(self.tokenSR.parameters()).dtype
                             low_embeds_pool = low_embeds_pool.to(dtype=sr_dtype)
                             gt_tokenSR = gt_tokenSR.to(dtype=sr_dtype)
                             reconstructed_SR = self.tokenSR(low_embeds_pool)
+     
                             tokensr_losses.append(self.mse(reconstructed_SR.float(), gt_tokenSR.float()))
 
                         select_image_embeds.append(picked)
@@ -358,7 +384,7 @@ class IVTLR(nn.Module):
                     K = original_selected_patches  # 有图时的插入数量
 
                 else:
-                    # === 无图像分支：占位初始化 ===
+
                     select_image_embeds = None
                     K = 0  # 无图时不插入任何 token
 
@@ -387,6 +413,7 @@ class IVTLR(nn.Module):
                     suffix_b = inputs_embeds[b, end_b:, :]
 
                     if pixel_values is not None and self.with_visual_latent:
+                        # === 有图：插入视觉 token ===
                         v_embed_b = select_image_embeds[b]  # (K, D)
                         # v_embed_b = v_embed_b[:0]   
                         merged_b = torch.cat([prefix_b, v_embed_b, suffix_b], dim=0)  # (old_len + K, D)
@@ -395,6 +422,7 @@ class IVTLR(nn.Module):
                         att_pref = attention_mask[b, :end_b]
                         att_suf = attention_mask[b, end_b:]
                         att_v = torch.ones(K, device=attention_mask.device, dtype=attention_mask.dtype)
+                        # att_v = att_v[:0]
                         merged_att = torch.cat([att_pref, att_v, att_suf], dim=0)
                         
                         orig_pref = original_mask[b, :end_b]
@@ -416,6 +444,7 @@ class IVTLR(nn.Module):
                         merged_tgt = torch.cat([tgt_pref, tgt_v, tgt_suf], dim=0)
                         
                     else:
+                  
                         merged_b = torch.cat([prefix_b, suffix_b], dim=0)  # (old_len, D)
                         merged_att = torch.cat([attention_mask[b, :end_b], attention_mask[b, end_b:]], dim=0)
                         merged_orig = torch.cat([original_mask[b, :end_b], original_mask[b, end_b:]], dim=0)
@@ -425,7 +454,7 @@ class IVTLR(nn.Module):
                     new_inputs_embeds.append(merged_b)
                     new_attention_mask.append(merged_att)
                     
-                    # position_ids 重新生成（兼容两种情况）
+
                     new_pos = torch.arange(merged_b.size(0), device=position_ids.device)
                     new_position_ids.append(new_pos)
                     
@@ -434,6 +463,8 @@ class IVTLR(nn.Module):
                     new_target_mask.append(merged_tgt)
                     
                     batch_max_len = max(batch_max_len, merged_b.size(0))
+
+
 
                 padded_embeds, padded_att, padded_pos = [], [], []
                 padded_orig, padded_img, padded_tgt = [], [], []
@@ -488,10 +519,8 @@ class IVTLR(nn.Module):
                         for i, pos in enumerate(latent_lists[b]): # [163, 164, 165]
                             if pos > end:
                                 latent_lists[b][i] = pos + K
-                                # logging.debug(f"latent pos shifted: {latent_lists[b][i]}")
-                            # if pass_idx == max_n_latents - 1:
-                            #     print("========", latent_lists[b][i]) # [164, 197, 230]
 
+                # === 6. 更新 end 指针（关键区别！）===
                 if pass_idx + 1 >= max_n_latents:
                     end = inputs_embeds.size(1)  # 处理完所有 latent，end 跳到末尾
                 else:
@@ -537,6 +566,7 @@ class IVTLR(nn.Module):
         logits = torch.cat(all_logits, dim=-2)  # (B, total_len, V)
         B, final_S, V = logits.size()
 
+        # print("======before and after latent legnth======", S, final_S) # 192 vs 1242
         new_labels = torch.full((B, final_S), -100, device=input_ids.device, dtype=labels.dtype) # 记住设备和类别都要保持一致
         num_labels = labels.size(1) # [p1, p2, p3, i1, i2, i3, <latent>, <latent>, <latent>, a1, a2, a3, a4] vs [p1, p2, p3, i1, i2, i3, xx, xx, xx, xx, xx, xx, xx, xx, a1, a2, a3, a4]
         new_labels[:, -num_labels:] = labels

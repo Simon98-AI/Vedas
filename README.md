@@ -40,8 +40,8 @@ We propose a visual replay module and routing depth scaling to collaboratively e
 
 <div style="max-height: 240px; overflow-y: auto;">
 
-- **[2026.09]** 🎉🎉Our Work is Accepted by NeurlPS 26.
-- **[2026.04]** 🎉🎉Initial release of Training Code and Inference Code.
+- **[2026.09]** 🎉🎉Our work is accepted by NeurlPS 26.
+- **[2026.04]** 🎉🎉Initial release of training code and inference code.
 
 </div>
 
